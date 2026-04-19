@@ -1,0 +1,21 @@
+{
+  "name": "@outrageousstorm/adb-wrapper",
+  "version": "1.0.0",
+  "description": "Type-safe async ADB wrapper for Node.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "keywords": [
+    "adb",
+    "android",
+    "typescript"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
