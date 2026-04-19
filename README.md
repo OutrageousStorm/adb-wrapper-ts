@@ -1,44 +1,26 @@
-# ⚡ ADB Wrapper for TypeScript/Node.js
+# ADB Wrapper — TypeScript
 
-Type-safe, promise-based Android ADB wrapper for Node.js projects.
-
-## Install
-
-```bash
-npm install @outrageousstorm/adb-wrapper
-```
-
-## Usage
+Type-safe TypeScript wrapper for Android ADB commands. Full coverage of common operations.
 
 ```typescript
-import ADBWrapper from '@outrageousstorm/adb-wrapper';
+import { ADB } from './adb';
 
-const adb = new ADBWrapper();
+const adb = new ADB();
 
-// List all devices
-const devices = await adb.listDevices();
+// Device info
+const model = await adb.getProperty('ro.product.model');
+const apps = await adb.listPackages();
 
-// Select device
-adb.selectDevice(devices[0].serial);
+// Install/uninstall
+await adb.install('app.apk');
+await adb.uninstall('com.example.app');
 
-// Get device info
-const info = await adb.getDeviceInfo();
-console.log(info); // { model, version, sdk, security }
-
-// Get battery
-const battery = await adb.getBattery();
-
-// List packages
-const pkgs = await adb.listPackages(true); // true = user only
-
-// Revoke permission
-await adb.revokePermission('com.app', 'android.permission.LOCATION');
-
-// Touch automation
+// Control
 await adb.tap(540, 960);
-await adb.swipe(540, 1000, 540, 500, 300);
+await adb.swipe(540, 1500, 540, 500);
+await adb.shell('pm clear com.example.app');
 
-// File transfer
-await adb.pushFile('./file.txt', '/sdcard/');
-await adb.pullFile('/sdcard/file.txt', './');
+// Query
+const battery = await adb.getBattery();
+const meminfo = await adb.getMemInfo();
 ```
