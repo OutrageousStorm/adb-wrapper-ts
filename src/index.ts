@@ -1,119 +1,157 @@
-import { execSync, exec } from 'child_process';
-import { promisify } from 'util';
+import { exec } from "child_process";
+import { promisify } from "util";
+import { which } from "which";
 
 const execAsync = promisify(exec);
 
-export interface Device {
+export interface DeviceInfo {
   serial: string;
-  status: 'device' | 'offline' | 'unauthorized';
+  state: "device" | "offline" | "unauthorized" | "unknown";
+  model?: string;
+  androidVersion?: string;
+  apiLevel?: number;
 }
 
 export interface CommandResult {
   stdout: string;
   stderr: string;
-  code: number;
-  success: boolean;
+  exitCode: number;
 }
 
-export class ADBWrapper {
-  private serial: string | null = null;
+export class AdbWrapper {
+  private adbPath: string;
 
-  async listDevices(): Promise<Device[]> {
-    const { stdout } = await execAsync('adb devices');
-    const lines = stdout.split('\n').slice(1).filter(l => l.trim());
-    return lines.map(line => {
-      const [serial, status] = line.split(/\s+/);
-      return { serial, status: status as any };
-    });
+  constructor(adbPath?: string) {
+    this.adbPath = adbPath || "adb";
   }
 
-  selectDevice(serial: string) {
-    this.serial = serial;
-    return this;
+  /**
+   * List all connected devices
+   */
+  async listDevices(): Promise<DeviceInfo[]> {
+    const result = await this.executeCommand("devices -l");
+    const lines = result.split("\n").slice(1);
+    return lines
+      .filter((l) => l.trim() && !l.includes("List of"))
+      .map((line) => {
+        const parts = line.split(/\s+/);
+        return {
+          serial: parts[0],
+          state: parts[1] as any,
+          model: parts.find((p) => p.startsWith("model:"))?.split(":")[1],
+          androidVersion: parts.find((p) => p.startsWith("device:"))?.split(":")[1],
+        };
+      });
   }
 
-  private getCmd(cmd: string): string {
-    const prefix = this.serial ? `-s ${this.serial}` : '';
-    return `adb ${prefix} shell ${cmd}`;
+  /**
+   * Get device info (model, Android version, etc.)
+   */
+  async getDeviceInfo(serial: string): Promise<Record<string, string>> {
+    const getprop = async (key: string) =>
+      (await this.shell(`getprop ${key}`, serial)).trim();
+
+    return {
+      model: await getprop("ro.product.model"),
+      brand: await getprop("ro.product.brand"),
+      android: await getprop("ro.build.version.release"),
+      apiLevel: await getprop("ro.build.version.sdk"),
+      serialNo: await getprop("ro.serialno"),
+      kernel: await getprop("ro.kernel.version"),
+    };
   }
 
-  async exec(cmd: string): Promise<CommandResult> {
-    try {
-      const { stdout, stderr } = await execAsync(this.getCmd(cmd));
-      return { stdout: stdout.trim(), stderr: stderr.trim(), code: 0, success: true };
-    } catch (err: any) {
-      return { stdout: '', stderr: err.message, code: err.code || 1, success: false };
-    }
+  /**
+   * Execute ADB command
+   */
+  async executeCommand(cmd: string, serial?: string): Promise<string> {
+    const fullCmd = serial ? `${this.adbPath} -s ${serial} ${cmd}` : `${this.adbPath} ${cmd}`;
+    const { stdout } = await execAsync(fullCmd);
+    return stdout;
   }
 
-  async getProperty(key: string): Promise<string> {
-    const result = await this.exec(`getprop ${key}`);
-    return result.stdout;
+  /**
+   * Execute shell command on device
+   */
+  async shell(cmd: string, serial?: string): Promise<string> {
+    return this.executeCommand(`shell ${cmd}`, serial);
   }
 
-  async getBattery(): Promise<any> {
-    const result = await this.exec('dumpsys battery');
-    const battery: any = {};
-    result.stdout.split('\n').forEach(line => {
-      const [k, v] = line.trim().split(':').map(s => s.trim());
-      if (k && v) battery[k] = v;
-    });
-    return battery;
+  /**
+   * Install APK
+   */
+  async install(apkPath: string, serial?: string): Promise<boolean> {
+    const result = await this.executeCommand(`install "${apkPath}"`, serial);
+    return result.includes("Success");
   }
 
-  async getDeviceInfo() {
-    const [model, version, sdk, security] = await Promise.all([
-      this.getProperty('ro.product.model'),
-      this.getProperty('ro.build.version.release'),
-      this.getProperty('ro.build.version.sdk'),
-      this.getProperty('ro.build.version.security_patch'),
-    ]);
-    return { model, version, sdk, security };
+  /**
+   * Uninstall package
+   */
+  async uninstall(packageName: string, serial?: string): Promise<boolean> {
+    const result = await this.executeCommand(`uninstall ${packageName}`, serial);
+    return result.includes("Success");
   }
 
-  async listPackages(userOnly = false): Promise<string[]> {
-    const flag = userOnly ? '-3' : '';
-    const result = await this.exec(`pm list packages ${flag}`);
-    return result.stdout
-      .split('\n')
-      .filter(l => l.startsWith('package:'))
-      .map(l => l.replace('package:', ''));
+  /**
+   * List installed packages
+   */
+  async listPackages(serial?: string, userOnly = true): Promise<string[]> {
+    const flag = userOnly ? "-3" : "";
+    const result = await this.shell(`pm list packages ${flag}`, serial);
+    return result
+      .split("\n")
+      .filter((l) => l.startsWith("package:"))
+      .map((l) => l.replace("package:", ""));
   }
 
-  async revokePermission(pkg: string, perm: string): Promise<boolean> {
-    const result = await this.exec(`pm revoke ${pkg} ${perm}`);
-    return result.stdout.includes('Success') || result.success;
+  /**
+   * Get app memory usage
+   */
+  async getMemoryUsage(packageName: string, serial?: string): Promise<Record<string, number>> {
+    const result = await this.shell(`dumpsys meminfo ${packageName}`, serial);
+    const match = result.match(/TOTAL\s+(\d+)/);
+    return {
+      totalKb: match ? parseInt(match[1]) : 0,
+    };
   }
 
-  async pushFile(local: string, remote: string): Promise<boolean> {
-    try {
-      const cmd = this.serial ? `adb -s ${this.serial}` : 'adb';
-      await execAsync(`${cmd} push "${local}" "${remote}"`);
-      return true;
-    } catch {
-      return false;
-    }
+  /**
+   * Push file to device
+   */
+  async push(localPath: string, remotePath: string, serial?: string): Promise<boolean> {
+    const result = await this.executeCommand(`push "${localPath}" "${remotePath}"`, serial);
+    return !result.includes("error");
   }
 
-  async pullFile(remote: string, local: string): Promise<boolean> {
-    try {
-      const cmd = this.serial ? `adb -s ${this.serial}` : 'adb';
-      await execAsync(`${cmd} pull "${remote}" "${local}"`);
-      return true;
-    } catch {
-      return false;
-    }
+  /**
+   * Pull file from device
+   */
+  async pull(remotePath: string, localPath: string, serial?: string): Promise<boolean> {
+    const result = await this.executeCommand(`pull "${remotePath}" "${localPath}"`, serial);
+    return !result.includes("error");
   }
 
-  async tap(x: number, y: number): Promise<boolean> {
-    const result = await this.exec(`input tap ${x} ${y}`);
-    return result.success;
-  }
-
-  async swipe(x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<boolean> {
-    const result = await this.exec(`input swipe ${x1} ${y1} ${x2} ${y2} ${ms}`);
-    return result.success;
+  /**
+   * Reboot device
+   */
+  async reboot(mode: "system" | "recovery" | "bootloader" = "system", serial?: string): Promise<void> {
+    await this.executeCommand(`reboot ${mode}`, serial);
   }
 }
 
-export default ADBWrapper;
+// CLI usage example
+if (require.main === module) {
+  (async () => {
+    const adb = new AdbWrapper();
+    const devices = await adb.listDevices();
+    console.log("Connected devices:", devices);
+
+    if (devices.length > 0) {
+      const info = await adb.getDeviceInfo(devices[0].serial);
+      console.log("Device info:", info);
+    }
+  })();
+}
+
+export default AdbWrapper;
