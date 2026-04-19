@@ -6,16 +6,15 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "node dist/test.js",
+    "dev": "ts-node src/index.ts"
   },
-  "keywords": [
-    "adb",
-    "android",
-    "typescript"
-  ],
-  "license": "MIT",
+  "dependencies": {
+    "which": "^4.0.0"
+  },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "ts-node": "^10.9.0"
   }
 }
