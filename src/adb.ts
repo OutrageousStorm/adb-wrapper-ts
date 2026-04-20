@@ -1,69 +1,75 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { execSync, spawn } from 'child_process';
+import { EventEmitter } from 'events';
 
-const execAsync = promisify(exec);
+export interface Device {
+  serial: string;
+  state: string;
+}
 
-export class ADB {
+export class ADB extends EventEmitter {
+  private device?: string;
+
+  constructor(deviceSerial?: string) {
+    super();
+    this.device = deviceSerial;
+  }
+
+  private cmd(command: string): string {
+    const prefix = this.device ? `-s ${this.device}` : '';
+    const full = `adb ${prefix} ${command}`;
+    try {
+      return execSync(full, { encoding: 'utf-8' }).trim();
+    } catch (e) {
+      throw new Error(`ADB failed: ${command}`);
+    }
+  }
+
   async shell(cmd: string): Promise<string> {
-    const { stdout } = await execAsync(`adb shell ${cmd}`);
-    return stdout.trim();
+    return this.cmd(`shell ${cmd}`);
+  }
+
+  async push(local: string, remote: string): Promise<void> {
+    this.cmd(`push ${local} ${remote}`);
+  }
+
+  async pull(remote: string, local: string): Promise<void> {
+    this.cmd(`pull ${remote} ${local}`);
+  }
+
+  async install(apk: string): Promise<boolean> {
+    try {
+      this.cmd(`install ${apk}`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async getProperty(key: string): Promise<string> {
     return this.shell(`getprop ${key}`);
   }
 
-  async listPackages(system: boolean = false): Promise<string[]> {
-    const flag = system ? '' : '-3';
-    const out = await this.shell(`pm list packages ${flag}`);
-    return out.split('\n')
-      .filter(l => l.startsWith('package:'))
-      .map(l => l.substring(8));
+  async screenshot(): Promise<Buffer> {
+    const proc = spawn('adb', ['-s', this.device || '', 'exec-out', 'screencap', '-p']);
+    return new Promise((resolve, reject) => {
+      let data: Buffer[] = [];
+      proc.stdout.on('data', (chunk) => data.push(chunk));
+      proc.on('close', (code) => {
+        code === 0 ? resolve(Buffer.concat(data)) : reject('Screenshot failed');
+      });
+    });
   }
 
-  async install(apk: string): Promise<boolean> {
-    const { stdout } = await execAsync(`adb install -r "${apk}"`);
-    return stdout.includes('Success');
-  }
-
-  async uninstall(pkg: string, keepData: boolean = true): Promise<boolean> {
-    const flag = keepData ? '-k' : '';
-    const { stdout } = await execAsync(`adb uninstall ${flag} ${pkg}`);
-    return stdout.includes('Success');
-  }
-
-  async tap(x: number, y: number): Promise<void> {
-    await this.shell(`input tap ${x} ${y}`);
-  }
-
-  async swipe(x1: number, y1: number, x2: number, y2: number, duration: number = 300): Promise<void> {
-    await this.shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${duration}`);
-  }
-
-  async getBattery(): Promise<{ level: number; status: string }> {
-    const level = await this.shell("dumpsys battery | grep level");
-    const status = await this.shell("dumpsys battery | grep status");
-    return {
-      level: parseInt(level.match(/\d+/)?.[0] || '0'),
-      status: status.split(':')[1]?.trim() || 'unknown'
-    };
-  }
-
-  async getMemInfo(): Promise<{ total: string; free: string }> {
-    const out = await this.shell("cat /proc/meminfo | head -2");
-    const lines = out.split('\n');
-    return {
-      total: lines[0]?.split(/\s+/)[1] || '0',
-      free: lines[1]?.split(/\s+/)[1] || '0'
-    };
-  }
-
-  async screenshot(output: string = 'screenshot.png'): Promise<void> {
-    await execAsync(`adb exec-out screencap -p > ${output}`);
-  }
-
-  async recordScreen(output: string = 'recording.mp4', seconds: number = 30): Promise<void> {
-    await this.shell(`screenrecord --time-limit ${seconds} /sdcard/${output}`);
-    await this.shell(`pull /sdcard/${output} .`);
+  static listDevices(): Device[] {
+    const output = execSync('adb devices', { encoding: 'utf-8' });
+    const lines = output.split('\n').slice(1);
+    return lines
+      .filter((l) => l.trim())
+      .map((l) => {
+        const [serial, state] = l.split(/\s+/);
+        return { serial, state };
+      });
   }
 }
+
+export default ADB;
